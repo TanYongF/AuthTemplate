@@ -1,0 +1,40 @@
+@startuml
+'https://plantuml.com/sequence-diagram
+'Oauth 2.0 protocol process
+title OAuth 2.0 Sequence Diagram
+participant Client
+participant AuthServer as "Authorization Server"
+participant ResourceServer as "Resource Server"
+actor ResourceOwner
+autonumber
+
+Client -> AuthServer: Authentication Request
+note right: Client requests authorization from the resource owner
+
+AuthServer->ResourceOwner: Redirect to Login Page
+ResourceOwner --> AuthServer : Grants access
+note right: Resource owner grants access
+
+AuthServer --> Client: Authentication Response with Code
+note right: Authorization server returns an authorization code
+
+Client -> AuthServer: Access Token Request
+note right: Client exchanges the authorization code for an access token
+
+AuthServer --> Client: Access Token Response
+note right: Authorization server returns an access token
+
+alt Access Token Expired
+    Client -> AuthServer: Refresh Token Request
+    note right: Client uses refresh token to get a new access token
+    AuthServer --> Client: New Access Token Response
+    note right: Authorization server returns a new access token
+end
+
+Client -> ResourceServer: Request with Access Token
+note right: Client accesses the protected resource with the access token
+
+ResourceServer --> Client: Protected Resource
+note right: Resource server returns the protected resource
+
+@enduml
