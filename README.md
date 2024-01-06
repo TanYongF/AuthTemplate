@@ -24,6 +24,5 @@ BUPT 安全协议设计与分析课程附录，包括如下几个部分：
 - test: 测试代码
 - main.go: 项目入口
 - 安全协议（待完善）
-- 
 ## 协议实现
 参照官方文档使用授权码模式实现了`Google OAuth2.0` 和 `Github OAuth2.0` 协议，具体测试接口可以查看：[接口实现](https://apifox.com/apidoc/shared-532c54cd-e26d-4e22-a34d-cc47ac473efa/api-139404017)
