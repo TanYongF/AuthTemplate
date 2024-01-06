@@ -1,0 +1,227 @@
+(*公共信道*)
+	free net:channel.
+	(*TLS信道*)
+	free TLS_pass:channel [private].
+	
+
+	const c1, c2, c3, c4, c5:bitstring.
+
+
+	const client_page_url:bitstring.
+	const response_type:bitstring.
+	const redirect_uri:bitstring.
+	const resource_uri:bitstring.
+	const grant_type:bitstring.
+	const token_type:bitstring.
+	const mac_algorithm:bitstring.
+
+	type mac.
+	type nonce.
+	type Token.
+	type RefreshToken.
+
+
+	free A_client_id:bitstring.
+	free A_client_password:bitstring [private].
+	free B_client_id:bitstring.
+	free B_client_password:bitstring [private].
+
+	table mac_keys(Token, bitstring).
+
+	table AuthCodes(bitstring, bitstring, bitstring).
+
+	table RefreshTokens(bitstring, RefreshToken).
+
+	table RegisteredClients(bitstring, bitstring).
+
+
+	fun Token_to_bitstring(Token):bitstring[data,typeConverter].
+	fun RefreshToken_to_bitstring(RefreshToken):bitstring[data,typeConverter].
+
+
+	fun senc(bitstring, bitstring):bitstring.
+	reduc forall x:bitstring, y:bitstring; sdec(senc(x,y),y) = x.
+
+	fun resourcecontent(bitstring):bitstring.
+
+	fun hmac_sha_256(bitstring, bitstring): mac.
+
+	fun enc(channel, bitstring): bitstring.
+	reduc forall m:channel, k:bitstring; dec(enc(m,k),k) = m.
+
+
+	fun F(bitstring):bitstring.
+
+
+	event auth_request(bitstring).
+	event auth_accepted(bitstring, bitstring).
+	event token_request(bitstring, bitstring).
+	event token_grant(bitstring, bitstring, Token, RefreshToken).
+	event resource_request(Token, mac).
+	event resource_accepted(Token, mac).
+	event token_refresh(bitstring, RefreshToken).
+	event token_refreshed(bitstring, RefreshToken).
+
+	
+(*可达性*)
+	query client_id:bitstring, authcode:bitstring; inj-event(auth_accepted(client_id, authcode)) ==> inj-event(auth_request(client_id)).
+	query client_id:bitstring, authcode:bitstring, tokencode:Token, refreshcode:RefreshToken; event(token_grant(client_id,authcode,tokencode,refreshcode)) ==> (event(token_request(client_id,authcode)) || event(token_refreshed(client_id, refreshcode))). 
+	query tokencode:Token, z:mac; event(resource_accepted(tokencode,z)) ==> event(resource_request(tokencode,z)). 
+	query client_id:bitstring, refreshcode:RefreshToken; event(token_refreshed(client_id,refreshcode)) ==> event(token_refresh(client_id,refreshcode)). 
+	query client_id:bitstring, authcode:bitstring, tokencode:Token, refreshcode:RefreshToken; event(token_grant(client_id,authcode,tokencode,refreshcode)) ==> event(auth_accepted(client_id, authcode)).
+	query client_id:bitstring, authcode:bitstring, tokencode:Token, refreshcode:RefreshToken, z:mac; event(resource_accepted(tokencode,z)) ==> (event(token_grant(client_id,authcode,tokencode,refreshcode)) ==> event(auth_accepted(client_id, authcode))).
+	query client_id:bitstring, tokencode:Token, refreshcode:RefreshToken, authcode:bitstring; event(token_refreshed(client_id,refreshcode)) ==> event(token_grant(client_id,authcode,tokencode,refreshcode)).
+	free secretKeyC, secretKey2C, secretTokenC, secretTokenRefreshC, secretTokenRefreshedC, secretTokenAS, secretTokenRefreshedAS, secretTokenRefreshAS1, secretTokenRefreshAS2, secretKeyAS, secretKey2AS, secretTokenRS, secretKeyRS: bitstring[private].
+(*机密性*)
+	query	attacker(A_client_password);
+			attacker(secretKeyC);(*客户端令牌*)
+			attacker(secretTokenRefreshC);(*客户端刷新令牌*)
+			attacker(secretKey2C);
+			attacker(secretTokenRefreshAS1);(*授权端刷新令牌*)
+			attacker(secretTokenRefreshAS2);
+			attacker(secretKeyAS);(*授权端令牌*)
+			attacker(secretKey2AS).
+	not		attacker(TLS_pass).
+
+
+let UserAgent() =
+	(*用户代理端*)
+	(*请求客户端页面*)
+		out(net, client_page_url);
+	(*重定向到认证页面*)
+		in(net, (client_id:bitstring, client_redirect_uri:bitstring));
+	(*建立TLS连接*)
+		in(TLS_pass, TLSchannel1:channel);
+	(*触发认证*)
+		event auth_request(client_id);
+		out(TLSchannel1, (response_type, client_id, client_redirect_uri, c1));
+	(*认证响应*)
+		in(net, code:bitstring);
+	(*授权码给到到客户端*)
+		out(net, code);
+	(*获取资源*)
+		in(net, resource:bitstring);
+	0.
+
+	
+
+let client(X_client_id:bitstring, X_client_password:bitstring) =
+(*第三方客户端*)
+	(*收到用户页面访问请求*)
+		in(net, =client_page_url);
+	(*重定向到认证页面*)
+		out(net, (X_client_id, redirect_uri));
+	(*收到授权码*)
+		in(net, code:bitstring);
+	(*与认证服务端建立TLS连接，使用授权码换取令牌*)
+		new TLSchannel2: channel;
+		out(TLS_pass, TLSchannel2);
+		event token_request(A_client_id, code);
+		out(TLSchannel2, (grant_type, X_client_id, X_client_password, code, redirect_uri, c2));
+	(*收到令牌*)
+		in(TLSchannel2, (token_code:Token, =token_type, mac_key:bitstring, =mac_algorithm, refresh_token:RefreshToken, =c3));
+	(*请求资源*)
+		new N:nonce;
+		let(normalized_string:bitstring) = (N, resource_uri) in
+		let mac_string = hmac_sha_256(normalized_string, mac_key) in 
+		event resource_request(token_code, mac_string);
+		out(net, (resource_uri, token_code, N, mac_string));
+	(*收到资源*)
+		in(net, resource:bitstring);
+	(*资源发送到用户代理*)
+		out(net, F(resource));
+	(*令牌刷新流程*)
+		new TLSchannel3: channel;
+		out(TLS_pass, TLSchannel3);
+		event token_refresh(X_client_id, refresh_token);
+		out(TLSchannel3, (grant_type, X_client_id, X_client_password, refresh_token, c4));
+		in(TLSchannel3, (token_code2:Token, =token_type, mac_key2:bitstring, =mac_algorithm, refresh_token2:RefreshToken, =c5));
+		out(net, senc(secretTokenRefreshC, RefreshToken_to_bitstring(refresh_token)));
+		out(net, senc(secretKeyC, mac_key));
+		out(net, senc(secretKey2C, mac_key2));
+	0.
+
+
+	
+	
+let authserver_AuthCode() =
+(*认证服务器*)
+	(*TLS连接建立*)
+		new TLSchannel1: channel;
+		out(TLS_pass, TLSchannel1);
+	(*收到认证请求，验证用户*)
+		in(TLSchannel1, (=response_type, client_id:bitstring, client_redirect_uri:bitstring, =c1));
+		get RegisteredClients(=client_id, client_password) in
+	(*返回授权码*)
+		new auth_code:bitstring;
+		event auth_accepted(client_id, auth_code);
+		out(net, auth_code);	
+		insert AuthCodes(auth_code, client_id, client_redirect_uri);
+	0.
+let authserver_TokenCode() =
+(*认证服务器*)
+	(*收到令牌请求，验证授权码*)
+		in(TLS_pass, TLSchannel2:channel);
+		in(TLSchannel2, (=grant_type, client_id:bitstring, client_password:bitstring, auth_code:bitstring, client_redirect_uri:bitstring, =c2));
+		get RegisteredClients(=client_id, =client_password) in
+		get AuthCodes(=auth_code, =client_id, =client_redirect_uri) in
+	(*返回令牌*)
+		new token_code:Token;
+		new refreshToken_code:RefreshToken;
+		new mac_key: bitstring;
+		event token_grant(client_id, auth_code, token_code, refreshToken_code);
+		out(TLSchannel2, (token_code, token_type, mac_key, mac_algorithm, refreshToken_code, c3));
+		insert mac_keys(token_code, mac_key);
+		insert RefreshTokens(client_id, refreshToken_code);
+		out(net, senc(secretTokenRefreshAS1, RefreshToken_to_bitstring(refreshToken_code)));
+		out(net, senc(secretKeyAS, mac_key));
+	0.
+
+
+let authserver_TokenCodeRefresh() =
+(*认证服务器*)
+	(*收到令牌刷新请求*)
+		in(TLS_pass, TLSchannel3:channel);
+		
+		in(TLSchannel3, (=grant_type, client_id:bitstring, client_password:bitstring, refreshToken_code_old:RefreshToken, =c4));
+		(* check authorized clients *)
+		get RegisteredClients(=client_id, =client_password) in
+		get RefreshTokens(=client_id, =refreshToken_code_old) in
+	(*返回新的令牌*)
+		new token_code:Token;
+		new mac_key: bitstring;
+		event token_refreshed(client_id, refreshToken_code_old);
+		get AuthCodes(auth_code, =client_id, client_redirect_uri) in
+		event token_grant(client_id, auth_code, token_code, refreshToken_code_old);
+		out(TLSchannel3, (token_code, token_type, mac_key, mac_algorithm, refreshToken_code_old, c5));
+		insert mac_keys(token_code, mac_key);
+		out(net, senc(secretTokenRefreshAS2, RefreshToken_to_bitstring(refreshToken_code_old)));
+		out(net, senc(secretKey2AS, mac_key));
+	0.
+
+let authserver() = 
+	
+	((authserver_AuthCode()) | (authserver_TokenCode()) | (authserver_TokenCodeRefresh()))
+	
+	.
+
+let resourceserver() =
+(*资源服务器*)
+	(*收到资源请求，验证令牌返回资源*)
+		in(net, (resource_url:bitstring, token_code:Token, N:nonce, mac_string:mac));
+		let(normalized_string:bitstring) = (N, resource_url) in
+		get mac_keys(=token_code, mac_key) in
+		let (=mac_string) = hmac_sha_256(normalized_string, mac_key) in 
+		event resource_accepted(token_code, mac_string);	
+		out(net, resourcecontent(resource_url));
+		out(net, senc(secretKeyRS, mac_key));
+		
+	0.
+
+
+ process
+	insert RegisteredClients(A_client_id, A_client_password);
+
+	( (!UserAgent()) | (!authserver()) | (!client(A_client_id, A_client_password)) | (!resourceserver()) )
+
+
